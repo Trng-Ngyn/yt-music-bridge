@@ -6,3 +6,4 @@ services:
     region: singapore
     dockerContext: .
     dockerfilePath: ./Dockerfile
+
