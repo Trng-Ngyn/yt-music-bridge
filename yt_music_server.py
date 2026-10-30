@@ -26,6 +26,17 @@ if not FFMPEG_EXE:
     except Exception:
         FFMPEG_EXE = "ffmpeg"
 
+import time
+LATEST_TELEMETRY = {
+    "status": "online",
+    "ssid": "Hotspot Di Động",
+    "ip": "Unknown",
+    "rssi": -55,
+    "temp": 42.0,
+    "heap": 85000,
+    "last_updated": time.time()
+}
+
 
 class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -42,6 +53,29 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+    def do_POST(self):
+        global LATEST_TELEMETRY
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/telemetry":
+            length = int(self.headers.get('Content-Length', 0))
+            if length > 0:
+                body = self.rfile.read(length)
+                try:
+                    data = json.loads(body.decode('utf-8'))
+                    data['last_updated'] = time.time()
+                    LATEST_TELEMETRY.update(data)
+                    print(f"[Telemetry POST] Received: {data}")
+                except Exception as e:
+                    print(f"[Telemetry POST] Error: {e}")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(b'{"status": "ok"}')
+            return
+        self.send_response(404)
         self.end_headers()
 
     def do_GET(self):
@@ -68,6 +102,22 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json.dumps({"status": "ok", "service": "YouTube Music Bridge Cloud"}).encode('utf-8'))
+            return
+
+        elif parsed.path == "/telemetry":
+            global LATEST_TELEMETRY
+            # If query params passed from ESP32, update telemetry
+            if params:
+                for k, v in params.items():
+                    LATEST_TELEMETRY[k] = v[0]
+                LATEST_TELEMETRY['last_updated'] = time.time()
+                print(f"[Telemetry GET] Updated: {LATEST_TELEMETRY}")
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(LATEST_TELEMETRY, ensure_ascii=False).encode('utf-8'))
             return
 
         elif parsed.path == "/resolve":
