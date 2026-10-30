@@ -6,6 +6,7 @@ import subprocess
 import os
 import sys
 import shutil
+import traceback
 
 try:
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -33,10 +34,15 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
     def get_public_base_url(self):
         proto = self.headers.get("X-Forwarded-Proto", "http")
         host = self.headers.get("Host", f"localhost:{PORT}")
-        # If Host contains .onrender.com or .koyeb.app or .hf.space, force https
         if any(d in host for d in [".onrender.com", ".koyeb.app", ".hf.space", ".railway.app", ".fly.dev"]):
             proto = "https"
         return f"{proto}://{host}"
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -65,6 +71,11 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
                 'extract_flat': True,
                 'no_warnings': True,
                 'noplaylist': True,
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['android', 'ios', 'mweb', 'web']
+                    }
+                }
             }
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -117,6 +128,11 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
                 'format': 'bestaudio/best',
                 'no_warnings': True,
                 'noplaylist': True,
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['android', 'ios', 'mweb', 'web']
+                    }
+                }
             }
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -134,10 +150,15 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
                 self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
 
-                # Launch ffmpeg to transcode live to 128k MP3
+                # Get user agent from yt-dlp extracted headers
+                headers = info.get('http_headers', {})
+                ua = headers.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+
+                # Launch ffmpeg with user_agent to transcode live to 128k MP3
                 ffmpeg_cmd = [
                     FFMPEG_EXE,
                     "-loglevel", "quiet",
+                    "-user_agent", ua,
                     "-reconnect", "1",
                     "-reconnect_streamed", "1",
                     "-reconnect_delay_max", "5",
@@ -178,9 +199,12 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
 
             except Exception as e:
                 print(f"[YT Server] Stream error for {vid}: {e}")
+                traceback.print_exc()
                 try:
                     self.send_response(500)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
                     self.end_headers()
+                    self.wfile.write(f"Stream error: {str(e)}".encode('utf-8'))
                 except Exception:
                     pass
         else:
@@ -199,4 +223,3 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nStopping server...")
         server.server_close()
-

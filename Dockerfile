@@ -1,8 +1,9 @@
 FROM python:3.11-slim
 
-# Install ffmpeg and ca-certificates
+# Install ffmpeg, nodejs (for yt-dlp JS challenges), and ca-certificates
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    nodejs \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -17,4 +18,3 @@ ENV PORT=8080
 EXPOSE 8080
 
 CMD ["python", "yt_music_server.py"]
-
