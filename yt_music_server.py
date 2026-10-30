@@ -241,6 +241,7 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
                 "-loglevel", "quiet",
                 "-i", "pipe:0",
                 "-vn",
+                "-af", "highpass=f=180,lowshelf=g=-5:f=250,equalizer=f=3200:t=q:w=1.2:g=2.5,volume=0.85",
                 "-acodec", "libmp3lame",
                 "-b:a", "128k",
                 "-ar", "44100",
