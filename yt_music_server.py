@@ -161,6 +161,7 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
 
             raw_audio_url = info.get('url')
 
+            try:
                 self.send_response(200)
                 self.send_header("Content-Type", "audio/mpeg")
                 self.send_header("Transfer-Encoding", "chunked")
