@@ -7,6 +7,7 @@ import os
 import sys
 import shutil
 import traceback
+import yt_dlp
 
 try:
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -25,7 +26,64 @@ if not FFMPEG_EXE:
     except Exception:
         FFMPEG_EXE = "ffmpeg"
 
-import yt_dlp
+
+def get_audio_stream_url(vid):
+    """
+    Extract direct audio URL trying multiple player clients.
+    Android and VisionOS bypass Google's datacenter bot challenge.
+    """
+    clients = ['android', 'visionos', 'ios', 'web']
+    cookie_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
+    has_cookies = os.path.exists(cookie_path) and os.path.getsize(cookie_path) > 100
+
+    errors = []
+    for client in clients:
+        try:
+            ydl_opts = {
+                'quiet': True,
+                'format': 'bestaudio/best',
+                'no_warnings': True,
+                'noplaylist': True,
+                'js_runtimes': {'deno': {'path': None}, 'node': {'path': None}},
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': [client]
+                    }
+                }
+            }
+            if client == 'web' and has_cookies:
+                ydl_opts['cookiefile'] = cookie_path
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
+                if not info:
+                    continue
+
+                # 1. Primary url field
+                raw_url = info.get('url')
+
+                # 2. Check formats list if top-level url is empty
+                if not raw_url and 'formats' in info:
+                    audio_fmts = [
+                        f for f in info['formats']
+                        if f.get('acodec') != 'none' and f.get('url')
+                    ]
+                    if audio_fmts:
+                        # Pick best audio quality
+                        audio_fmts.sort(key=lambda x: (x.get('abr') or 0, x.get('tbr') or 0))
+                        raw_url = audio_fmts[-1]['url']
+
+                if raw_url:
+                    headers = info.get('http_headers', {})
+                    ua = headers.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+                    return raw_url, ua, client, None
+        except Exception as e:
+            err_msg = str(e).split('\n')[0]
+            errors.append(f"{client}: {err_msg}")
+            print(f"[YT Server] Client '{client}' failed for {vid}: {err_msg}")
+
+    return None, None, None, "; ".join(errors)
+
 
 class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -56,6 +114,24 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"status": "ok", "service": "YouTube Music Bridge Cloud"}).encode('utf-8'))
             return
 
+        elif parsed.path == "/diag":
+            vid = params.get("v", ["488ceQWoGGw"])[0].strip()
+            raw_url, ua, client, err = get_audio_stream_url(vid)
+            resp = {
+                "success": bool(raw_url),
+                "video_id": vid,
+                "client": client,
+                "url_preview": (raw_url[:60] + "...") if raw_url else None,
+                "error": err,
+                "yt_dlp_version": yt_dlp.__version__
+            }
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(resp, indent=2).encode('utf-8'))
+            return
+
         elif parsed.path == "/resolve":
             query = params.get("q", [""])[0].strip()
             if not query:
@@ -71,6 +147,7 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
                 'extract_flat': True,
                 'no_warnings': True,
                 'noplaylist': True,
+                'js_runtimes': {'deno': {'path': None}, 'node': {'path': None}},
             }
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -118,49 +195,17 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             print(f"[YT Server] Streaming YouTube video ID: {vid}")
-            info = None
-            try:
-                # 1. VisionOS client (no cookies needed, bypasses bot check on cloud datacenters)
-                ydl_opts_vision = {
-                    'quiet': True,
-                    'format': 'bestaudio/best',
-                    'no_warnings': True,
-                    'noplaylist': True,
-                    'extractor_args': {
-                        'youtube': {
-                            'player_client': ['visionos']
-                        }
-                    }
-                }
-                with yt_dlp.YoutubeDL(ydl_opts_vision) as ydl:
-                    info = ydl.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
-            except Exception as e1:
-                print(f"[YT Server] VisionOS extract failed: {e1}")
+            raw_audio_url, ua, client_used, err = get_audio_stream_url(vid)
 
-            if not info or not info.get('url'):
-                try:
-                    # 2. Fallback with cookies if available
-                    ydl_opts_fallback = {
-                        'quiet': True,
-                        'format': 'bestaudio/best',
-                        'no_warnings': True,
-                        'noplaylist': True,
-                    }
-                    cookie_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
-                    if os.path.exists(cookie_path) and os.path.getsize(cookie_path) > 100:
-                        ydl_opts_fallback['cookiefile'] = cookie_path
-                    with yt_dlp.YoutubeDL(ydl_opts_fallback) as ydl:
-                        info = ydl.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
-                except Exception as e2:
-                    print(f"[YT Server] Fallback extract failed: {e2}")
-
-            if not info or not info.get('url'):
-                self.send_response(404)
+            if not raw_audio_url:
+                print(f"[YT Server] Failed to extract audio for {vid}: {err}")
+                self.send_response(502)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.end_headers()
+                self.wfile.write(json.dumps({"error": "Failed to extract audio stream", "details": err}).encode('utf-8'))
                 return
 
-            raw_audio_url = info.get('url')
-
+            print(f"[YT Server] Transcoding audio for {vid} via client '{client_used}'...")
             try:
                 self.send_response(200)
                 self.send_header("Content-Type", "audio/mpeg")
@@ -168,10 +213,6 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
-
-                # Get user agent from yt-dlp extracted headers
-                headers = info.get('http_headers', {})
-                ua = headers.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
 
                 # Launch ffmpeg with user_agent to transcode live to 128k MP3
                 ffmpeg_cmd = [
