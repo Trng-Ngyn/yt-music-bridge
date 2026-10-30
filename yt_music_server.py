@@ -118,29 +118,48 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             print(f"[YT Server] Streaming YouTube video ID: {vid}")
-            ydl_opts = {
-                'quiet': True,
-                'format': 'bestaudio',
-                'no_warnings': True,
-                'noplaylist': True,
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['visionos', 'mediaconnect', 'android']
+            info = None
+            try:
+                # 1. VisionOS client (no cookies needed, bypasses bot check on cloud datacenters)
+                ydl_opts_vision = {
+                    'quiet': True,
+                    'format': 'bestaudio/best',
+                    'no_warnings': True,
+                    'noplaylist': True,
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': ['visionos']
+                        }
                     }
                 }
-            }
-            cookie_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
-            if os.path.exists(cookie_path) and os.path.getsize(cookie_path) > 100:
-                ydl_opts['cookiefile'] = cookie_path
-
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                with yt_dlp.YoutubeDL(ydl_opts_vision) as ydl:
                     info = ydl.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
-                    raw_audio_url = info.get('url')
-                    if not raw_audio_url:
-                        self.send_response(404)
-                        self.end_headers()
-                        return
+            except Exception as e1:
+                print(f"[YT Server] VisionOS extract failed: {e1}")
+
+            if not info or not info.get('url'):
+                try:
+                    # 2. Fallback with cookies if available
+                    ydl_opts_fallback = {
+                        'quiet': True,
+                        'format': 'bestaudio/best',
+                        'no_warnings': True,
+                        'noplaylist': True,
+                    }
+                    cookie_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
+                    if os.path.exists(cookie_path) and os.path.getsize(cookie_path) > 100:
+                        ydl_opts_fallback['cookiefile'] = cookie_path
+                    with yt_dlp.YoutubeDL(ydl_opts_fallback) as ydl:
+                        info = ydl.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
+                except Exception as e2:
+                    print(f"[YT Server] Fallback extract failed: {e2}")
+
+            if not info or not info.get('url'):
+                self.send_response(404)
+                self.end_headers()
+                return
+
+            raw_audio_url = info.get('url')
 
                 self.send_response(200)
                 self.send_header("Content-Type", "audio/mpeg")
