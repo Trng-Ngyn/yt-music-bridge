@@ -120,6 +120,38 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(LATEST_TELEMETRY, ensure_ascii=False).encode('utf-8'))
             return
 
+        elif parsed.path == "/telegram/send":
+            msg_text = params.get("text", [""])[0].strip()
+            if not msg_text:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b'{"error": "Missing text"}')
+                return
+            token = "9297115289:AAGCQQQB5RUTxuApFeAeE-gSvs2xVLsQ46c"
+            chat_id = "5670587722"
+            t_url = f"https://api.telegram.org/bot{token}/sendMessage"
+            req_data = json.dumps({
+                "chat_id": chat_id,
+                "text": f"🤖 **[Tin nhắn từ Robot Lily]:**\n\n{msg_text}",
+                "parse_mode": "Markdown"
+            }).encode('utf-8')
+            req = urllib.request.Request(t_url, data=req_data, headers={'Content-Type': 'application/json', 'User-Agent': 'LilyServer'})
+            try:
+                with urllib.request.urlopen(req, timeout=10) as t_res:
+                    res_body = t_res.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(res_body)
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+            return
+
         elif parsed.path == "/resolve":
             query = params.get("q", [""])[0].strip()
             if not query:
