@@ -29,58 +29,56 @@ if not FFMPEG_EXE:
 
 def get_audio_stream_url(vid):
     """
-    Extract direct audio URL trying multiple player clients.
-    Android and VisionOS bypass Google's datacenter bot challenge.
+    Extract direct audio URL using modern yt-dlp with EJS challenge solver.
+    Tries default client with EJS first, then visionos, then android.
     """
-    clients = ['android', 'visionos', 'ios', 'web']
     cookie_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
     has_cookies = os.path.exists(cookie_path) and os.path.getsize(cookie_path) > 100
 
+    client_strategies = [
+        ("default_ejs", {}),
+        ("visionos", {'extractor_args': {'youtube': {'player_client': ['visionos']}}}),
+        ("android", {'extractor_args': {'youtube': {'player_client': ['android']}}}),
+    ]
+    if has_cookies:
+        client_strategies.append(("web_cookies", {'cookiefile': cookie_path}))
+
     errors = []
-    for client in clients:
+    for name, strat in client_strategies:
         try:
             ydl_opts = {
                 'quiet': True,
                 'format': 'bestaudio/best',
                 'no_warnings': True,
                 'noplaylist': True,
+                'remote_components': ['ejs:github'],
                 'js_runtimes': {'deno': {'path': None}, 'node': {'path': None}},
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': [client]
-                    }
-                }
+                **strat
             }
-            if client == 'web' and has_cookies:
-                ydl_opts['cookiefile'] = cookie_path
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
                 if not info:
                     continue
 
-                # 1. Primary url field
                 raw_url = info.get('url')
-
-                # 2. Check formats list if top-level url is empty
                 if not raw_url and 'formats' in info:
                     audio_fmts = [
                         f for f in info['formats']
                         if f.get('acodec') != 'none' and f.get('url')
                     ]
                     if audio_fmts:
-                        # Pick best audio quality
                         audio_fmts.sort(key=lambda x: (x.get('abr') or 0, x.get('tbr') or 0))
                         raw_url = audio_fmts[-1]['url']
 
                 if raw_url:
                     headers = info.get('http_headers', {})
                     ua = headers.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
-                    return raw_url, ua, client, None
+                    return raw_url, ua, name, None
         except Exception as e:
             err_msg = str(e).split('\n')[0]
-            errors.append(f"{client}: {err_msg}")
-            print(f"[YT Server] Client '{client}' failed for {vid}: {err_msg}")
+            errors.append(f"{name}: {err_msg}")
+            print(f"[YT Server] Strategy '{name}' failed for {vid}: {err_msg}")
 
     return None, None, None, "; ".join(errors)
 
@@ -103,6 +101,20 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        try:
+            self._handle_get()
+        except Exception as e:
+            traceback.print_exc()
+            try:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e), "traceback": traceback.format_exc()}).encode('utf-8'))
+            except Exception:
+                pass
+
+    def _handle_get(self):
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
 
@@ -116,11 +128,11 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
 
         elif parsed.path == "/diag":
             vid = params.get("v", ["488ceQWoGGw"])[0].strip()
-            raw_url, ua, client, err = get_audio_stream_url(vid)
+            raw_url, ua, client_used, err = get_audio_stream_url(vid)
             resp = {
                 "success": bool(raw_url),
                 "video_id": vid,
-                "client": client,
+                "client": client_used,
                 "url_preview": (raw_url[:60] + "...") if raw_url else None,
                 "error": err,
                 "yt_dlp_version": yt_dlp.__version__
@@ -147,45 +159,39 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
                 'extract_flat': True,
                 'no_warnings': True,
                 'noplaylist': True,
+                'remote_components': ['ejs:github'],
                 'js_runtimes': {'deno': {'path': None}, 'node': {'path': None}},
             }
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    search_query = f"ytsearch1:{query}"
-                    res = ydl.extract_info(search_query, download=False)
-                    entries = res.get('entries', [])
-                    if not entries:
-                        self.send_response(404)
-                        self.send_header("Content-Type", "application/json; charset=utf-8")
-                        self.end_headers()
-                        self.wfile.write(b'{"error": "No results"}')
-                        return
-
-                    entry = entries[0]
-                    vid = entry.get('id')
-                    title = entry.get('title', 'YouTube Music')
-
-                    base_url = self.get_public_base_url()
-                    stream_url = f"{base_url}/stream?v={vid}"
-
-                    resp_data = {
-                        "success": True,
-                        "title": title,
-                        "video_id": vid,
-                        "url": stream_url
-                    }
-                    self.send_response(200)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                search_query = f"ytsearch1:{query}"
+                res = ydl.extract_info(search_query, download=False)
+                entries = res.get('entries', [])
+                if not entries:
+                    self.send_response(404)
                     self.send_header("Content-Type", "application/json; charset=utf-8")
-                    self.send_header("Access-Control-Allow-Origin", "*")
                     self.end_headers()
-                    self.wfile.write(json.dumps(resp_data, ensure_ascii=False).encode('utf-8'))
-                    print(f"[YT Server] Resolved: '{title}' -> {stream_url}")
-            except Exception as e:
-                print(f"[YT Server] Error resolving {query}: {e}")
-                self.send_response(500)
+                    self.wfile.write(b'{"error": "No results"}')
+                    return
+
+                entry = entries[0]
+                vid = entry.get('id')
+                title = entry.get('title', 'YouTube Music')
+
+                base_url = self.get_public_base_url()
+                stream_url = f"{base_url}/stream?v={vid}"
+
+                resp_data = {
+                    "success": True,
+                    "title": title,
+                    "video_id": vid,
+                    "url": stream_url
+                }
+                self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+                self.wfile.write(json.dumps(resp_data, ensure_ascii=False).encode('utf-8'))
+                print(f"[YT Server] Resolved: '{title}' -> {stream_url}")
 
         elif parsed.path == "/stream":
             vid = params.get("v", [""])[0].strip()
@@ -206,67 +212,56 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             print(f"[YT Server] Transcoding audio for {vid} via client '{client_used}'...")
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/mpeg")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+
+            # Launch ffmpeg with user_agent to transcode live to 128k MP3
+            ffmpeg_cmd = [
+                FFMPEG_EXE,
+                "-loglevel", "quiet",
+                "-user_agent", ua,
+                "-reconnect", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "5",
+                "-i", raw_audio_url,
+                "-vn",
+                "-acodec", "libmp3lame",
+                "-b:a", "128k",
+                "-ar", "44100",
+                "-ac", "2",
+                "-f", "mp3",
+                "pipe:1"
+            ]
+
+            proc = subprocess.Popen(
+                ffmpeg_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=32768
+            )
+
             try:
-                self.send_response(200)
-                self.send_header("Content-Type", "audio/mpeg")
-                self.send_header("Transfer-Encoding", "chunked")
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Cache-Control", "no-cache")
-                self.end_headers()
-
-                # Launch ffmpeg with user_agent to transcode live to 128k MP3
-                ffmpeg_cmd = [
-                    FFMPEG_EXE,
-                    "-loglevel", "quiet",
-                    "-user_agent", ua,
-                    "-reconnect", "1",
-                    "-reconnect_streamed", "1",
-                    "-reconnect_delay_max", "5",
-                    "-i", raw_audio_url,
-                    "-vn",
-                    "-acodec", "libmp3lame",
-                    "-b:a", "128k",
-                    "-ar", "44100",
-                    "-ac", "2",
-                    "-f", "mp3",
-                    "pipe:1"
-                ]
-
-                proc = subprocess.Popen(
-                    ffmpeg_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    bufsize=32768
-                )
-
-                try:
-                    while True:
-                        chunk = proc.stdout.read(16384)
-                        if not chunk:
-                            break
-                        # HTTP Chunked transfer
-                        hex_len = f"{len(chunk):X}\r\n".encode('ascii')
-                        self.wfile.write(hex_len + chunk + b"\r\n")
-                        self.wfile.flush()
-                    # End chunk
-                    self.wfile.write(b"0\r\n\r\n")
+                while True:
+                    chunk = proc.stdout.read(16384)
+                    if not chunk:
+                        break
+                    # HTTP Chunked transfer
+                    hex_len = f"{len(chunk):X}\r\n".encode('ascii')
+                    self.wfile.write(hex_len + chunk + b"\r\n")
                     self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError):
-                    print(f"[YT Server] Client disconnected from stream {vid}")
-                finally:
-                    proc.kill()
-                    proc.wait()
+                # End chunk
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                print(f"[YT Server] Client disconnected from stream {vid}")
+            finally:
+                proc.kill()
+                proc.wait()
 
-            except Exception as e:
-                print(f"[YT Server] Stream error for {vid}: {e}")
-                traceback.print_exc()
-                try:
-                    self.send_response(500)
-                    self.send_header("Content-Type", "text/plain; charset=utf-8")
-                    self.end_headers()
-                    self.wfile.write(f"Stream error: {str(e)}".encode('utf-8'))
-                except Exception:
-                    pass
         else:
             self.send_response(404)
             self.end_headers()
