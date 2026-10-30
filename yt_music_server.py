@@ -16,8 +16,6 @@ except Exception:
 
 PORT = int(os.environ.get("PORT", "8080"))
 
-COOKIE_FILE = os.path.join(os.path.dirname(__file__), "cookies.txt")
-
 # Locate ffmpeg
 FFMPEG_EXE = shutil.which("ffmpeg")
 if not FFMPEG_EXE:
@@ -74,8 +72,6 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
                 'no_warnings': True,
                 'noplaylist': True,
             }
-            if os.path.exists(COOKIE_FILE):
-                ydl_opts['cookiefile'] = COOKIE_FILE
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     search_query = f"ytsearch1:{query}"
@@ -124,12 +120,19 @@ class YouTubeMusicHandler(http.server.BaseHTTPRequestHandler):
             print(f"[YT Server] Streaming YouTube video ID: {vid}")
             ydl_opts = {
                 'quiet': True,
-                'format': 'bestaudio/18/best',
+                'format': 'bestaudio',
                 'no_warnings': True,
                 'noplaylist': True,
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['visionos', 'mediaconnect', 'android']
+                    }
+                }
             }
-            if os.path.exists(COOKIE_FILE):
-                ydl_opts['cookiefile'] = COOKIE_FILE
+            cookie_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
+            if os.path.exists(cookie_path) and os.path.getsize(cookie_path) > 100:
+                ydl_opts['cookiefile'] = cookie_path
+
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
